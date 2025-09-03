@@ -12,7 +12,7 @@ Modified and maintained by [Zinho](https://github.com/ZinhoYip).
 
 - **Unpack Files**: Extract all embedded sub-files from `.pck` and `.bnk` archives.
 - **Inspect File Structure**: Clearly list the IDs and indices of all `.bnk` and `.wem` files within a `.pck` package using the verbose log mode.
-- **Replace and Repack (SDDE Custom)**: Replace specific files within a `.pck` package with new ones and generate a new, game-ready `.pck` file.
+- **Replace and Repack (SDDE Custom)**: Replace specific files within a `.pck` package and `.bnk` package with new ones and generate a new, game-ready `.pck` file and `.bnk` file.
 - **Cross-Platform**: Built with Go, it can be easily compiled and run on Windows, macOS, and Linux.
 
 ## How to Use `wwiseutil_SDDE.exe`
