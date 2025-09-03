@@ -101,4 +101,4 @@ wwiseutil_SDDE.exe -f "C:\SDDE\Data\Audio\SD2\sfx.pck" -r -t "D:\my_replacements
 
 ## 许可证
 
-本项目基于 MIT 许可证。详情请查看 `LICENSE` 文件。
+本项目基于 GNU General Public License v3.0。详情请查看 `LICENSE` 文件。
