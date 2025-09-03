@@ -1,76 +1,75 @@
 # wwiseutil-SDDE
 
-这是一个针对 Wwise 音频包（`.pck` 和 `.bnk` 文件）的命令行工具，特别为游戏 **《热血无赖：终极版》（Sleeping Dogs: Definitive Edition）** 的 `.pck` 文件格式提供了定制化的**文件替换**和**重新打包**功能。
+[Read in Chinese (中文说明)](README.zh-CN.md)
 
-本项目并改进自 [hpxro7/wwiseutil](https://github.com/hpxro7/wwiseutil)。特别感谢原作者的工作。
+This is a command-line tool for Wwise audio packages (`.pck` and `.bnk` files), specifically customized to provide **file replacement** and **repacking** functionality for the `.pck` file format used in **Sleeping Dogs: Definitive Edition**.
 
-由 [Zinho](https://github.com/ZinhoYip) 进行修改和维护。
+This project is a fork and improvement of [hpxro7/wwiseutil](https://github.com/hpxro7/wwiseutil). Special thanks to the original author for their work.
 
-## 核心功能
+Modified and maintained by [Zinho](https://github.com/ZinhoYip).
 
-- **解包文件**: 从 `.pck` 和 `.bnk` 文件中提取所有包含的子文件。
-- **查看文件结构**: 通过详细日志模式，清晰地列出 `.pck` 包内所有 `.bnk` 和 `.wem` 文件的ID和索引号。
-- **替换并重新打包 (SDDE 定制)**: 使用新文件替换 `.pck` 包内的指定文件，并生成一个可用于游戏的新 `.pck` 文件。
-- **跨平台**: 基于 Go 语言开发，可轻松编译运行于 Windows, macOS 和 Linux。
+## Core Features
 
-## 如何使用 `wwiseutil_SDDE.exe`
+- **Unpack Files**: Extract all embedded sub-files from `.pck` and `.bnk` archives.
+- **Inspect File Structure**: Clearly list the IDs and indices of all `.bnk` and `.wem` files within a `.pck` package using the verbose log mode.
+- **Replace and Repack (SDDE Custom)**: Replace specific files within a `.pck` package with new ones and generate a new, game-ready `.pck` file.
+- **Cross-Platform**: Built with Go, it can be easily compiled and run on Windows, macOS, and Linux.
 
-你可以从本项目的 [GitHub Releases](https://github.com/ZinhoYip/wwiseutil-SDDE/releases) 页面下载最新版本的 `wwiseutil_SDDE.exe` 可执行文件。
+## How to Use `wwiseutil_SDDE.exe`
 
-下载后，建议将其放置于一个方便访问的路径，或者添加到系统环境变量中，以便在任何位置的命令行中调用。
+You can download the latest version of `wwiseutil_SDDE.exe` from the [GitHub Releases](https://github.com/ZinhoYip/wwiseutil-SDDE/releases) page of this project.
 
-### 1. 查看 `.pck` 包内容（替换文件前的准备工作）
+After downloading, it is recommended to place it in an easily accessible path or add it to your system's environment variables for convenient access from any command-line location.
 
-在替换文件之前，你**必须**知道包内每个文件的索引号（Index）。使用 `-v` (verbose) 参数可以生成一个 `log.txt` 文件，其中包含了所有文件的详细信息。
+### 1. Inspect `.pck` Package Contents (Preparation for File Replacement)
 
-**指令格式:** 
+Before replacing files, you **must** know the index of each file inside the package. Using the `-v` (verbose) parameter generates a `log.txt` file containing detailed information about all files.
+
+**Command Format:**
 ```bash
-wwiseutil_SDDE.exe -f "<源pck文件路径>" -v -u -o "<任意临时输出目录>"
+wwiseutil_SDDE.exe -f "<path_to_source.pck>" -v -u -o "<any_temporary_output_dir>"
 ```
 
-**示例:** 
+**Example:**
 ```bash
-# 这会在程序同目录下生成一个 log.txt 文件
+# This will generate a log.txt file in the same directory as the program
 wwiseutil_SDDE.exe -f "C:\SDDE\Data\Audio\SD2\sfx.pck" -v -u -o "F:\temp_unpack_output"
 ```
 
-打开 `log.txt`，你会看到类似下面的内容，记录好你想要替换的文件的 **Index**
+Open `log.txt`, and you will see content similar to the following. Take note of the **Index** of the file you want to replace.
 
+### 2. Unpack `.pck` or `.bnk` Files
 
+If you just want to extract all files from a package, use the `-u` (unpack) parameter.
 
- ###  2.解包 `.pck` 或 `.bnk` 文件
-
-如果你只是想把包内的所有文件解压出来，可以使用 `-u` (unpack) 参数。
-
-**指令格式:** 
-
+**Command Format:**
 ```bash
-wwiseutil_SDDE.exe -f "<源pck文件路径>" -u -o "<文件输出目录>"
+wwiseutil_SDDE.exe -f "<path_to_source.pck_or.bnk>" -u -o "<output_directory>"
 ```
 
-**示例:** 
+**Example:**
 ```bash
-# 解包 pck 文件
+# Unpack a PCK file
 wwiseutil_SDDE.exe -f "C:\SDDE\Data\Audio\SD2\sfx.pck" -u -o "C:\unpacked_pck_files"
 
-# 解包 bnk 文件
+# Unpack a BNK file
 wwiseutil_SDDE.exe -f "C:\SDDE\Data\Audio\135561656.bnk" -u -o "C:\unpacked_bnk_files"
 ```
 
-### 3. 替换 `.pck` 内的文件（核心功能）
+### 3. Replace Files in a `.pck` (Core Feature)
 
-这是本工具为 SDDE 定制的核心功能。请严格按照以下步骤操作。
+This is the core feature customized for SDDE. Please follow these steps strictly.
 
-**第一步：准备替换文件**
+**Step 1: Prepare Replacement Files**
 
-1.  创建一个主文件夹，用于存放所有待替换的文件（例如 `D:\my_replacements`）。
-2.  在该主文件夹内，根据你要替换的文件类型，创建 `bnk` 和/或 `wem` 子文件夹。
-3.  将你要用于替换的 `.bnk` 或 `.wem` 文件放入对应的子文件夹中。
-4.  **关键：** 将这些文件的文件名修改为你**在第一步中查到的 Index 号**。
-    -   例如，要替换 `BnkIndex[1]`，就把你的新 bnk 文件命名为 `1.bnk`，并放入 `bnk` 文件夹。
-    -   例如，要替换 `WemIndex[5]`，就把你的新 wem 文件命名为 `5.wem`，并放入 `wem` 文件夹。
+1.  Create a main folder to hold all your replacement files (e.g., `D:\my_replacements`).
+2.  Inside this main folder, create `bnk` and/or `wem` subfolders, depending on the type of file you are replacing.
+3.  Place the `.bnk` or `.wem` files you want to use for replacement into the corresponding subfolders.
+4.  **Crucially:** Rename these files to the **Index number** you found in Step 1.
+    -   For example, to replace `BnkIndex[1]`, rename your new bnk file to `1.bnk` and place it in the `bnk` folder.
+    -   To replace `WemIndex[5]`, rename your new wem file to `5.wem` and place it in the `wem` folder.
 
-**目录结构示例:** 
+**Directory Structure Example:**
 ```
 D:\my_replacements\
 ├───bnk\
@@ -79,26 +78,26 @@ D:\my_replacements\
     └───5.wem
 ```
 
-**第二步：执行替换命令**
+**Step 2: Execute the Replace Command**
 
-使用 `-r` (replace) 参数，并同时提供源文件、替换文件目录和新文件的输出路径。
+Use the `-r` (replace) parameter, providing the source file, the replacement directory, and the path for the new output file.
 
-**指令格式:** 
+**Command Format:**
 ```bash
-wwiseutil_SDDE.exe -f "<源pck文件路径>" -r -t "<你的替换文件主目录>" -o "<新生成的pck文件路径>"
+wwiseutil_SDDE.exe -f "<path_to_source.pck>" -r -t "<your_main_replacement_dir>" -o "<path_for_newly_generated.pck>"
 ```
 
-**示例:** 
+**Example:**
 ```bash
 wwiseutil_SDDE.exe -f "C:\SDDE\Data\Audio\SD2\sfx.pck" -r -t "D:\my_replacements" -o "C:\SDDE\Data\Audio\SD2\sfx_new.pck"
 ```
 
-命令执行成功后，`sfx_new.pck` 就是包含了你修改后内容的新文件。你可以将其重命名回`sfx.pck`并替换游戏原文件来进行测试。
+After the command completes successfully, `sfx_new.pck` is the new file containing your modified content. You can rename it back to `sfx.pck` and replace the original game file to test it.
 
-## 致谢
+## Acknowledgments
 
-- 感谢 **hpxro7** 创建了原版的 [wwiseutil](https://github.com/hpxro7/wwiseutil)。
+-   Thanks to **hpxro7** for creating the original [wwiseutil](https://github.com/hpxro7/wwiseutil).
 
-## 许可证
+## License
 
-本项目基于 GNU General Public License v3.0。详情请查看 `LICENSE` 文件。
+This project is licensed under the GNU General Public License v3.0. See the `LICENSE` file for details.
