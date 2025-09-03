@@ -2,6 +2,7 @@
 package pck
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 // This version is modified to support a special PCK format that contains both BNK and WEM files.
 type File struct {
 	closer     io.Closer
+	reader     readerAtSeeker
 	Header     *Header
 	BnkIndexes []*FileIndex
 	WemIndexes []*FileIndex
@@ -49,8 +51,9 @@ type EmbeddedFile struct {
 // readerAtSeeker is an interface that groups io.ReaderAt and io.ReadSeeker.
 // os.File implements this.
 type readerAtSeeker interface {
+	io.Reader
 	io.ReaderAt
-	io.ReadSeeker
+	io.Seeker
 	io.Closer
 }
 
@@ -59,6 +62,7 @@ type readerAtSeeker interface {
 func NewFile(r readerAtSeeker, unknownSize int) (*File, error) {
 	pck := new(File)
 	pck.closer = r
+	pck.reader = r
 
 	// Read Header
 	hdr := new(Header)
@@ -79,6 +83,7 @@ func NewFile(r readerAtSeeker, unknownSize int) (*File, error) {
 	if err := binary.Read(r, binary.LittleEndian, &bnkCount); err != nil {
 		return nil, fmt.Errorf("reading bnk count: %w", err)
 	}
+	pck.BnkIndexes = make([]*FileIndex, 0, bnkCount)
 	for i := uint32(0); i < bnkCount; i++ {
 		idx := new(FileIndex)
 		if err := binary.Read(r, binary.LittleEndian, idx); err != nil {
@@ -92,6 +97,7 @@ func NewFile(r readerAtSeeker, unknownSize int) (*File, error) {
 	if err := binary.Read(r, binary.LittleEndian, &wemCount); err != nil {
 		return nil, fmt.Errorf("reading wem count: %w", err)
 	}
+	pck.WemIndexes = make([]*FileIndex, 0, wemCount)
 	for i := uint32(0); i < wemCount; i++ {
 		idx := new(FileIndex)
 		if err := binary.Read(r, binary.LittleEndian, idx); err != nil {
@@ -101,23 +107,23 @@ func NewFile(r readerAtSeeker, unknownSize int) (*File, error) {
 	}
 
 	// Create readers for BNK file data
-	for _, idx := range pck.BnkIndexes {
-		reader := io.NewSectionReader(r, int64(idx.Offset), int64(idx.Length))
-		pck.Bnks = append(pck.Bnks, &EmbeddedFile{
+	pck.Bnks = make([]*EmbeddedFile, len(pck.BnkIndexes))
+	for i, idx := range pck.BnkIndexes {
+		pck.Bnks[i] = &EmbeddedFile{
 			Index:  idx,
-			Reader: reader,
+			Reader: io.NewSectionReader(r, int64(idx.Offset), int64(idx.Length)),
 			Name:   fmt.Sprintf("%d.bnk", idx.ID),
-		})
+		}
 	}
 
 	// Create readers for WEM file data
-	for _, idx := range pck.WemIndexes {
-		reader := io.NewSectionReader(r, int64(idx.Offset), int64(idx.Length))
-		pck.Wems = append(pck.Wems, &EmbeddedFile{
+	pck.Wems = make([]*EmbeddedFile, len(pck.WemIndexes))
+	for i, idx := range pck.WemIndexes {
+		pck.Wems[i] = &EmbeddedFile{
 			Index:  idx,
-			Reader: reader,
+			Reader: io.NewSectionReader(r, int64(idx.Offset), int64(idx.Length)),
 			Name:   fmt.Sprintf("%d.wem", idx.ID),
-		})
+		}
 	}
 
 	return pck, nil
@@ -168,14 +174,13 @@ func (pck *File) UnpackTo(outputDir string) error {
 	for _, bnk := range pck.Bnks {
 		outFile, err := os.Create(filepath.Join(bnkDir, bnk.Name))
 		if err != nil {
-			outFile.Close()
-			return err
+			return err // No need to close if creation failed
 		}
+		defer outFile.Close()
+
 		if _, err := io.Copy(outFile, bnk.Reader); err != nil {
-			outFile.Close()
 			return err
 		}
-		outFile.Close()
 	}
 
 	// Unpack WEMs
@@ -186,14 +191,13 @@ func (pck *File) UnpackTo(outputDir string) error {
 	for _, wem := range pck.Wems {
 		outFile, err := os.Create(filepath.Join(wemDir, wem.Name))
 		if err != nil {
-			outFile.Close()
 			return err
 		}
+		defer outFile.Close()
+
 		if _, err := io.Copy(outFile, wem.Reader); err != nil {
-			outFile.Close()
 			return err
 		}
-		outFile.Close()
 	}
 	return nil
 }
@@ -202,16 +206,19 @@ func (pck *File) UnpackTo(outputDir string) error {
 func (pck *File) WriteTo(w io.Writer) (int64, error) {
 	var written int64
 
+	// Use a buffered writer for efficiency
+	bufWriter := bufio.NewWriter(w)
+
 	// Write Header
-	if err := binary.Write(w, binary.LittleEndian, pck.Header.Identifier); err != nil {
+	if err := binary.Write(bufWriter, binary.LittleEndian, pck.Header.Identifier); err != nil {
 		return written, err
 	}
 	written += 4
-	if err := binary.Write(w, binary.LittleEndian, pck.Header.HeaderAndIndexesLength); err != nil {
+	if err := binary.Write(bufWriter, binary.LittleEndian, pck.Header.HeaderAndIndexesLength); err != nil {
 		return written, err
 	}
 	written += 4
-	n, err := w.Write(pck.Header.Unknown)
+	n, err := bufWriter.Write(pck.Header.Unknown)
 	if err != nil {
 		return written, err
 	}
@@ -219,12 +226,12 @@ func (pck *File) WriteTo(w io.Writer) (int64, error) {
 
 	// Write BNK Count and Indexes
 	bnkCount := uint32(len(pck.BnkIndexes))
-	if err := binary.Write(w, binary.LittleEndian, bnkCount); err != nil {
+	if err := binary.Write(bufWriter, binary.LittleEndian, bnkCount); err != nil {
 		return written, err
 	}
 	written += 4
 	for _, idx := range pck.BnkIndexes {
-		if err := binary.Write(w, binary.LittleEndian, idx); err != nil {
+		if err := binary.Write(bufWriter, binary.LittleEndian, idx); err != nil {
 			return written, err
 		}
 		written += 24
@@ -232,15 +239,20 @@ func (pck *File) WriteTo(w io.Writer) (int64, error) {
 
 	// Write WEM Count and Indexes
 	wemCount := uint32(len(pck.WemIndexes))
-	if err := binary.Write(w, binary.LittleEndian, wemCount); err != nil {
+	if err := binary.Write(bufWriter, binary.LittleEndian, wemCount); err != nil {
 		return written, err
 	}
 	written += 4
 	for _, idx := range pck.WemIndexes {
-		if err := binary.Write(w, binary.LittleEndian, idx); err != nil {
+		if err := binary.Write(bufWriter, binary.LittleEndian, idx); err != nil {
 			return written, err
 		}
 		written += 24
+	}
+
+	// Flush header/index data
+	if err := bufWriter.Flush(); err != nil {
+		return written, err
 	}
 
 	// Write Data
@@ -275,15 +287,15 @@ func (pck *File) String() string {
 	fmt.Fprintf(b, "WEM Count: %d\n\n", len(pck.WemIndexes))
 
 	b.WriteString("--- BNK Files ---\n")
-	fmt.Fprintf(b, "% -7s | % -10s | % -15s | % -10s\n", "Index", "ID", "Offset", "Length")
+	fmt.Fprintf(b, "%-7s | %-10s | %-15s | %-10s\n", "Index", "ID", "Offset", "Length")
 	for i, idx := range pck.BnkIndexes {
-		fmt.Fprintf(b, "% -7d | % -10d | % -15d | % -10d\n", i+1, idx.ID, idx.Offset, idx.Length)
+		fmt.Fprintf(b, "%-7d | %-10d | %-15d | %-10d\n", i+1, idx.ID, idx.Offset, idx.Length)
 	}
 
 	b.WriteString("\n--- WEM Files ---\n")
-	fmt.Fprintf(b, "% -7s | % -10s | % -15s | % -10s\n", "Index", "ID", "Offset", "Length")
+	fmt.Fprintf(b, "%-7s | %-10s | %-15s | %-10s\n", "Index", "ID", "Offset", "Length")
 	for i, idx := range pck.WemIndexes {
-		fmt.Fprintf(b, "% -7d | % -10d | % -15d | % -10d\n", i+1, idx.ID, idx.Offset, idx.Length)
+		fmt.Fprintf(b, "%-7d | %-10d | %-15d | %-10d\n", i+1, idx.ID, idx.Offset, idx.Length)
 	}
 
 	return b.String()
@@ -297,121 +309,156 @@ type ReplacementFile struct {
 	Type string // "bnk" or "wem"
 }
 
-// Repack rebuilds the PCK file with replacement files.
+// Repack rebuilds the PCK file with replacement files in a memory-efficient way.
 func Repack(inputFile string, outputFile string, replacements []*ReplacementFile) (int64, error) {
-	// Open and parse the original file
+	// Open the original file
 	pckFile, err := Open(inputFile)
 	if err != nil {
 		return 0, fmt.Errorf("opening original file for repack: %w", err)
 	}
 	defer pckFile.Close()
 
-	// Read replacement file data into memory
-	for _, r := range replacements {
-		data, err := os.ReadFile(r.Path)
-		if err != nil {
-			return 0, fmt.Errorf("reading replacement file %s: %w", r.Path, err)
-		}
-		r.Data = data
-	}
-
-	// Create new lists of embedded files, replacing where necessary
-	newBnks := []*EmbeddedFile{}
-	for _, bnk := range pckFile.Bnks {
-		replaced := false
-		for _, r := range replacements {
-			if r.Type == "bnk" && r.ID == bnk.Index.ID {
-				newBnks = append(newBnks, &EmbeddedFile{
-					Index: &FileIndex{
-						ID:       bnk.Index.ID,
-						Type:     bnk.Index.Type,
-						Length:   uint32(len(r.Data)),
-						Unknown1: bnk.Index.Unknown1,
-						// Offset will be recalculated
-						Unknown2: bnk.Index.Unknown2,
-					},
-					Reader: strings.NewReader(string(r.Data)),
-					Name:   bnk.Name,
-				})
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			buf, _ := io.ReadAll(bnk.Reader)
-			bnk.Reader = strings.NewReader(string(buf))
-			newBnks = append(newBnks, bnk)
-		}
-	}
-	pckFile.Bnks = newBnks
-	pckFile.BnkIndexes = getIndexes(newBnks)
-
-	newWems := []*EmbeddedFile{}
-	for _, wem := range pckFile.Wems {
-		replaced := false
-		for _, r := range replacements {
-			if r.Type == "wem" && r.ID == wem.Index.ID {
-				newWems = append(newWems, &EmbeddedFile{
-					Index: &FileIndex{
-						ID:       wem.Index.ID,
-						Type:     wem.Index.Type,
-						Length:   uint32(len(r.Data)),
-						Unknown1: wem.Index.Unknown1,
-						// Offset will be recalculated
-						Unknown2: wem.Index.Unknown2,
-					},
-					Reader: strings.NewReader(string(r.Data)),
-					Name:   wem.Name,
-				})
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			buf, _ := io.ReadAll(wem.Reader)
-			wem.Reader = strings.NewReader(string(buf))
-			newWems = append(newWems, wem)
-		}
-	}
-	pckFile.Wems = newWems
-	pckFile.WemIndexes = getIndexes(newWems)
-
-	// === CORE FIXES START HERE ===
-
-	// 1. Calculate the correct starting offset for the data area
-	dataAreaStartOffset := uint32(4+4+len(pckFile.Header.Unknown)) + 4 + uint32(len(pckFile.BnkIndexes)*24) + 4 + uint32(len(pckFile.WemIndexes)*24)
-
-	// 2. Recalculate all offsets as ABSOLUTE offsets from the start of the file
-	currentOffset := dataAreaStartOffset
-	for _, bnk := range pckFile.Bnks {
-		bnk.Index.Offset = currentOffset
-		currentOffset += bnk.Index.Length
-	}
-	for _, wem := range pckFile.Wems {
-		wem.Index.Offset = currentOffset
-		currentOffset += wem.Index.Length
-	}
-
-	// 3. Recalculate the HeaderAndIndexesLength field
-	// This is the length from after the field itself to the end of all indexes.
-	pckFile.Header.HeaderAndIndexesLength = dataAreaStartOffset - 8 // Subtract the first 8 bytes (Identifier + field itself)
-
-	// === CORE FIXES END HERE ===
-
-	// Create and write to the output file
+	// Create the output file
 	outFile, err := os.Create(outputFile)
 	if err != nil {
 		return 0, fmt.Errorf("creating output file: %w", err)
 	}
 	defer outFile.Close()
 
-	return pckFile.WriteTo(outFile)
-}
+	// Create a map for quick lookup of replacements
+	replacementMap := make(map[string]map[uint32]*ReplacementFile)
+	replacementMap["bnk"] = make(map[uint32]*ReplacementFile)
+	replacementMap["wem"] = make(map[uint32]*ReplacementFile)
 
-func getIndexes(files []*EmbeddedFile) []*FileIndex {
-	indexes := make([]*FileIndex, len(files))
-	for i, f := range files {
-		indexes[i] = f.Index
+	for _, r := range replacements {
+		data, err := os.ReadFile(r.Path)
+		if err != nil {
+			return 0, fmt.Errorf("reading replacement file %s: %w", r.Path, err)
+		}
+		r.Data = data
+		replacementMap[r.Type][r.ID] = r
 	}
-	return indexes
+
+	// Create new index slices
+	newBnkIndexes := make([]*FileIndex, len(pckFile.BnkIndexes))
+	newWemIndexes := make([]*FileIndex, len(pckFile.WemIndexes))
+
+	// Copy original indexes and update lengths for replaced files
+	for i, idx := range pckFile.BnkIndexes {
+		newIdx := *idx // Make a copy
+		if r, ok := replacementMap["bnk"][idx.ID]; ok {
+			newIdx.Length = uint32(len(r.Data))
+		}
+		newBnkIndexes[i] = &newIdx
+	}
+	for i, idx := range pckFile.WemIndexes {
+		newIdx := *idx // Make a copy
+		if r, ok := replacementMap["wem"][idx.ID]; ok {
+			newIdx.Length = uint32(len(r.Data))
+		}
+		newWemIndexes[i] = &newIdx
+	}
+
+	// === Recalculate Offsets and Header Length ===
+	headerSize := uint32(4 + 4 + len(pckFile.Header.Unknown))
+	bnkIndexSize := uint32(len(newBnkIndexes) * 24)
+	wemIndexSize := uint32(len(newWemIndexes) * 24)
+	dataAreaStartOffset := headerSize + 4 + bnkIndexSize + 4 + wemIndexSize
+
+	pckFile.Header.HeaderAndIndexesLength = dataAreaStartOffset - 8 // Subtract Identifier and the field itself
+
+	currentOffset := dataAreaStartOffset
+	for _, idx := range newBnkIndexes {
+		idx.Offset = currentOffset
+		currentOffset += idx.Length
+	}
+	for _, idx := range newWemIndexes {
+		idx.Offset = currentOffset
+		currentOffset += idx.Length
+	}
+
+	// === Write the new PCK file ===
+	var written int64
+	bufWriter := bufio.NewWriter(outFile)
+
+	// 1. Write Header
+	if err := binary.Write(bufWriter, binary.LittleEndian, pckFile.Header.Identifier); err != nil {
+		return written, err
+	}
+	if err := binary.Write(bufWriter, binary.LittleEndian, pckFile.Header.HeaderAndIndexesLength); err != nil {
+		return written, err
+	}
+	if _, err := bufWriter.Write(pckFile.Header.Unknown); err != nil {
+		return written, err
+	}
+
+	// 2. Write BNK Indexes
+	if err := binary.Write(bufWriter, binary.LittleEndian, uint32(len(newBnkIndexes))); err != nil {
+		return written, err
+	}
+	for _, idx := range newBnkIndexes {
+		if err := binary.Write(bufWriter, binary.LittleEndian, idx); err != nil {
+			return written, err
+		}
+	}
+
+	// 3. Write WEM Indexes
+	if err := binary.Write(bufWriter, binary.LittleEndian, uint32(len(newWemIndexes))); err != nil {
+		return written, err
+	}
+	for _, idx := range newWemIndexes {
+		if err := binary.Write(bufWriter, binary.LittleEndian, idx); err != nil {
+			return written, err
+		}
+	}
+
+	// Flush header/index data to ensure it's written before data blocks
+	if err := bufWriter.Flush(); err != nil {
+		return written, err
+	}
+	written = int64(dataAreaStartOffset)
+
+
+	// 4. Write Data Blocks
+	// BNKs
+	for i, idx := range pckFile.BnkIndexes {
+		var n int64
+		var err error
+		if r, ok := replacementMap["bnk"][idx.ID]; ok {
+			// Write replacement data
+			nW, errWrite := outFile.Write(r.Data)
+			n = int64(nW)
+			err = errWrite
+		} else {
+			// Copy original data
+			pckFile.reader.Seek(int64(idx.Offset), io.SeekStart)
+			n, err = io.CopyN(outFile, pckFile.reader, int64(newBnkIndexes[i].Length))
+		}
+		if err != nil {
+			return written, fmt.Errorf("writing bnk ID %d: %w", idx.ID, err)
+		}
+		written += n
+	}
+
+	// WEMs
+	for i, idx := range pckFile.WemIndexes {
+		var n int64
+		var err error
+		if r, ok := replacementMap["wem"][idx.ID]; ok {
+			// Write replacement data
+			nW, errWrite := outFile.Write(r.Data)
+			n = int64(nW)
+			err = errWrite
+		} else {
+			// Copy original data
+			pckFile.reader.Seek(int64(idx.Offset), io.SeekStart)
+			n, err = io.CopyN(outFile, pckFile.reader, int64(newWemIndexes[i].Length))
+		}
+		if err != nil {
+			return written, fmt.Errorf("writing wem ID %d: %w", idx.ID, err)
+		}
+		written += n
+	}
+
+	return written, nil
 }
