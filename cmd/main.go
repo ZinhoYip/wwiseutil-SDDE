@@ -3,289 +3,269 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
-	"io/ioutil"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"wwiseutil/bnk"
+	"wwiseutil/pck"
 )
-
-import (
-	"github.com/hpxro7/wwiseutil/bnk"
-	"github.com/hpxro7/wwiseutil/pck"
-	"github.com/hpxro7/wwiseutil/util"
-	"github.com/hpxro7/wwiseutil/wwise"
-)
-
-const shorthandSuffix = " (shorthand)"
-const wemExtension = ".wem"
-
-var shouldUnpack bool
-var shouldReplace bool
-var filePath string
-var output string
-var targetPath string
-var verbose bool
-
-type flagError string
-
-func init() {
-	const (
-		usage    = "unpack a .bnk or .pck into seperate .wem files"
-		flagName = "unpack"
-	)
-	flag.BoolVar(&shouldUnpack, flagName, false, usage)
-	flag.BoolVar(&shouldUnpack, "u", false, shorthandDesc(flagName))
-}
-
-func init() {
-	const (
-		usage = "replace a set of .wem files from a source .bnk or .pck file, " +
-			"outputing a fully usable .bnk or .pck with wems, offsets and lengths " +
-			"updated."
-		flagName = "replace"
-	)
-	flag.BoolVar(&shouldReplace, flagName, false, usage)
-	flag.BoolVar(&shouldReplace, "r", false, shorthandDesc(flagName))
-}
-
-func init() {
-	const (
-		usage = "the path to the source .bnk or .pck. When unpack is used, this " +
-			"is the bnk or pck file to unpack. When replace is used, this .bnk or " +
-			".pck is used as a source; the wem files, offsets and lengths of this " +
-			".bnk or .pck will updated and written to the file specified by output."
-		flagName = "filepath"
-	)
-	flag.StringVar(&filePath, flagName, "", usage)
-	flag.StringVar(&filePath, "f", "", shorthandDesc(flagName))
-}
-
-func init() {
-	const (
-		usage = "When unpack is used, this is the directory to output unpacked " +
-			".wem files. When replace is used, this is the directory to output the " +
-			"updated .bnk or .pck."
-		flagName = "output"
-	)
-	flag.StringVar(&output, flagName, "", usage)
-	flag.StringVar(&output, "o", "", shorthandDesc(flagName))
-}
-
-func init() {
-	const (
-		usage = "The directory to find .wem files in for replacing. Each wem " +
-			"file's name must be a number corresponding to the index of the wem " +
-			"file to replace from the source SoundBank or File Package. The index " +
-			"of the first wem file is 1. The wems in the source SoundBank will be " +
-			"replaced with the wems in this directory. These wems must not be " +
-			"padded ahead of time; this tool will automatically add any padding " +
-			"needed."
-		flagName = "target"
-	)
-	flag.StringVar(&targetPath, flagName, "", usage)
-	flag.StringVar(&targetPath, "t", "", shorthandDesc(flagName))
-}
-
-func init() {
-	const (
-		usage = "Shows additional information about the strcuture of the parsed " +
-			"SoundBank or File Package file."
-		flagName = "verbose"
-	)
-	flag.BoolVar(&verbose, flagName, false, usage)
-	flag.BoolVar(&verbose, "v", false, shorthandDesc(flagName))
-}
-
-func shorthandDesc(flagName string) string {
-	return "(shorthand for -" + flagName + ")"
-}
-
-func verifyFlags() {
-	var err flagError
-	switch {
-	case !(shouldUnpack || shouldReplace):
-		err = "Either unpack or replace should be specified"
-	case shouldUnpack && shouldReplace:
-		err = "Both unpack and replace cannot be specified"
-	case filePath == "":
-		err = "bnkpath cannot be empty"
-	case output == "":
-		err = "output cannot be empty"
-	}
-
-	if err != "" {
-		flag.Usage()
-		log.Fatal(err)
-	}
-}
-
-func verifyReplaceFlags() {
-	var err flagError
-	switch {
-	case targetPath == "":
-		err = "target cannot be empty"
-	}
-
-	if err != "" {
-		flag.Usage()
-		log.Fatal(err)
-	}
-}
-
-// Verifies that the extension of the input file is supported. Returns true if
-// the file is a SoundBank file and false if it is a File Package file.
-func verifyInputType() bool {
-	fileType, ext := util.GetFileType(filePath)
-	isSoundBank := fileType == util.SoundBankFileType
-	isFilePath := fileType == util.FilePackageFileType
-	if !(isSoundBank || isFilePath) {
-		flag.Usage()
-		log.Fatal(ext, ", is not a supported input file type")
-	}
-	return isSoundBank
-}
-
-func unpack(isSoundBank bool) {
-	var ctn wwise.Container
-	var err error
-
-	if isSoundBank {
-		ctn, err = bnk.Open(filePath)
-	} else { // Input is file package
-		ctn, err = pck.Open(filePath)
-	}
-	defer ctn.Close()
-
-	if err != nil {
-		log.Fatalln("Could not parse .bnk or .pck file:", err)
-	}
-	if verbose {
-		fmt.Println(ctn)
-	}
-
-	err = createDirIfEmpty(output)
-	if err != nil {
-		log.Fatalln("Could not create output directory:", err)
-	}
-	total := int64(0)
-	for i, wem := range ctn.Wems() {
-		filename := util.CanonicalWemName(i, len(ctn.Wems()))
-		f, err := os.Create(filepath.Join(output, filename))
-		if err != nil {
-			log.Fatalf("Could not create wem file \"%s\": %s", filename, err)
-		}
-		n, err := io.Copy(f, wem)
-		if err != nil {
-			log.Fatalf("Could not write wem file \"%s\": %s", filename, err)
-		}
-		total += n
-	}
-	fmt.Printf("Successfully wrote %d wem(s) to %s\n", len(ctn.Wems()),
-		output)
-	fmt.Printf("Wrote %d bytes in total\n", total)
-}
-
-func replace(isSoundBank bool) {
-	var ctn wwise.Container
-	var err error
-
-	if isSoundBank {
-		ctn, err = bnk.Open(filePath)
-	} else { // Input is file package
-		ctn, err = pck.Open(filePath)
-	}
-	defer ctn.Close()
-
-	if err != nil {
-		log.Fatalln("Could not parse .bnk or .pck file:", err)
-	}
-	if verbose {
-		fmt.Println(ctn)
-	}
-
-	targetFileInfos, err := ioutil.ReadDir(targetPath)
-	if err != nil {
-		log.Fatalf("Could not open target directory, \"%s\": %s\n", targetPath, err)
-	}
-	targets := processTargetFiles(ctn, targetFileInfos)
-
-	ctn.ReplaceWems(targets...)
-
-	outputFile, err := os.Create(output)
-	if err != nil {
-		log.Fatalf("Could not create output file \"%s\": %s\n", output, err)
-	}
-	total, err := ctn.WriteTo(outputFile)
-	if err != nil {
-		log.Fatalln("Could not write output to file: ", err)
-	}
-	fmt.Println("Sucessfuly replaced! Output file written to:", output)
-	fmt.Printf("Wrote %d bytes in total\n", total)
-}
-
-func processTargetFiles(c wwise.Container,
-	fis []os.FileInfo) []*wwise.ReplacementWem {
-	var targets []*wwise.ReplacementWem
-	var names []string
-	for _, fi := range fis {
-		name := fi.Name()
-		ext := filepath.Ext(name)
-		if ext != wemExtension {
-			log.Printf("Ignoring %s: It does not have a .wem file extension",
-				name)
-			continue
-		}
-		wemIndex, err := strconv.Atoi(strings.TrimSuffix(name, ext))
-		// Wems are indexed internally starting from 0, but the file names start
-		// at 1.
-		wemIndex--
-		if err != nil {
-			log.Printf("Ignoring %s: It does not have a valid integer name",
-				name)
-			continue
-		}
-		if wemIndex < 0 || wemIndex >= len(c.Wems()) {
-			log.Printf("Ignoring %s: This files's valid index range is "+
-				"%d to %d", name, 1, len(c.Wems()))
-			continue
-		}
-		f, err := os.Open(filepath.Join(targetPath, name))
-		if err != nil {
-			log.Printf("Ignoring %s: Could not open file: %s", name, err)
-			continue
-		}
-
-		names = append(names, fi.Name())
-		targets = append(targets, &wwise.ReplacementWem{f, wemIndex, fi.Size()})
-	}
-	if len(targets) == 0 {
-		log.Fatal("There are no replacement wems")
-	}
-	fmt.Printf("Using %d replacement wem(s): %s\n", len(targets),
-		strings.Join(names, ", "))
-	return targets
-}
-
-func createDirIfEmpty(path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return os.Mkdir(output, os.ModePerm)
-	}
-	return nil
-}
 
 func main() {
-	flag.Parse()
-	verifyFlags()
-	isSoundBank := verifyInputType()
+	log.SetFlags(0)
 
-	switch {
-	case shouldUnpack:
-		unpack(isSoundBank)
-	case shouldReplace:
-		verifyReplaceFlags()
-		replace(isSoundBank)
+	// Define flags in the original style
+	var filepathFlag, outputFlag, targetFlag string
+	flag.StringVar(&filepathFlag, "f", "", "(shorthand for -filepath)")
+	flag.StringVar(&filepathFlag, "filepath", "", "The path to the source .bnk or .pck file.")
+	flag.StringVar(&outputFlag, "o", "", "(shorthand for -output)")
+	flag.StringVar(&outputFlag, "output", "", "Output directory for unpacking or output file for repacking.")
+	flag.StringVar(&targetFlag, "t", "", "(shorthand for -target)")
+	flag.StringVar(&targetFlag, "target", "", "Directory containing replacement files.")
+
+	var unpackFlag, replaceFlag, verboseFlag bool
+	flag.BoolVar(&unpackFlag, "u", false, "(shorthand for -unpack)")
+	flag.BoolVar(&unpackFlag, "unpack", false, "Unpack a .bnk or .pck into separate files.")
+	flag.BoolVar(&replaceFlag, "r", false, "(shorthand for -replace)")
+	flag.BoolVar(&replaceFlag, "replace", false, "Replace files in a source .pck or .bnk.")
+	flag.BoolVar(&verboseFlag, "v", false, "(shorthand for -verbose)")
+	flag.BoolVar(&verboseFlag, "verbose", false, "Show additional information about the parsed file.")
+
+	flag.Parse()
+
+	if filepathFlag == "" {
+		log.Println("Error: -filepath (-f) is a required argument.")
+		flag.Usage()
+		return
 	}
+
+	if unpackFlag {
+		if outputFlag == "" {
+			log.Println("Error: -output (-o) is required for unpacking.")
+			flag.Usage()
+			return
+		}
+		handleUnpack(filepathFlag, outputFlag, verboseFlag)
+	} else if replaceFlag {
+		if outputFlag == "" {
+			log.Println("Error: -output (-o) is required for replacing.")
+			flag.Usage()
+			return
+		}
+		if targetFlag == "" {
+			log.Println("Error: -target (-t) is required for replacing.")
+			flag.Usage()
+			return
+		}
+		handleReplace(filepathFlag, outputFlag, targetFlag, verboseFlag)
+	} else {
+		log.Println("No operation specified. Use -unpack or -replace.")
+		flag.Usage()
+	}
+}
+
+func handleUnpack(inputFile, outputDir string, verbose bool) {
+	ext := strings.ToLower(filepath.Ext(inputFile))
+
+	switch ext {
+	case ".pck", ".npck":
+		log.Printf("Unpacking PCK file: %s", inputFile)
+		f, err := pck.Open(inputFile)
+		if err != nil {
+			log.Fatalf("Error opening PCK file: %v", err)
+		}
+		defer f.Close()
+
+		if verbose {
+			timestamp := time.Now().Format(time.RFC3339Nano)
+			verboseOutput := f.String()
+			finalOutput := fmt.Sprintf("Log generated at: %s\n\n%s", timestamp, verboseOutput)
+
+			log.Println(finalOutput)
+			logFile, err := os.Create("log.txt")
+			if err != nil {
+				log.Printf("Warning: could not create log.txt: %v", err)
+			} else {
+				defer logFile.Close()
+				_, err := logFile.WriteString(finalOutput)
+				if err != nil {
+					log.Printf("Warning: failed to write to log.txt: %v", err)
+				}
+			}
+		}
+
+		if err := f.UnpackTo(outputDir); err != nil {
+			log.Fatalf("Error unpacking PCK file: %v", err)
+		}
+		log.Printf("Successfully unpacked files to: %s", outputDir)
+
+	case ".bnk", ".nbnk":
+		log.Printf("Unpacking BNK file: %s", inputFile)
+		f, err := bnk.Open(inputFile)
+		if err != nil {
+			log.Fatalf("Error opening BNK file: %v", err)
+		}
+		defer f.Close()
+
+		if verbose {
+			log.Println(f.String())
+		}
+
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			log.Fatalf("Error creating output directory: %v", err)
+		}
+
+		for _, wem := range f.Wems() {
+			wemName := fmt.Sprintf("%d.wem", wem.Descriptor.WemId)
+			outPath := filepath.Join(outputDir, wemName)
+			outFile, err := os.Create(outPath)
+			if err != nil {
+				log.Printf("Failed to create file %s: %v", outPath, err)
+				continue
+			}
+			_, err = outFile.ReadFrom(wem.Reader)
+			outFile.Close()
+			if err != nil {
+				log.Printf("Failed to write wem %s: %v", wemName, err)
+			}
+		}
+		log.Printf("Successfully unpacked WEM files to: %s", outputDir)
+
+	default:
+		log.Fatalf("Unsupported file type: %s", ext)
+	}
+}
+
+func handleReplace(inputFile, outputFile, targetDir string, verbose bool) {
+	ext := strings.ToLower(filepath.Ext(inputFile))
+	if ext != ".pck" && ext != ".npck" {
+		log.Fatalf("Replacing is only supported for the special .pck format.")
+	}
+
+	// Open the source PCK to get the ID mappings from indexes
+	srcPck, err := pck.Open(inputFile)
+	if err != nil {
+		log.Fatalf("Error opening source PCK: %v", err)
+	}
+	defer srcPck.Close()
+
+	if verbose {
+		log.Println("Source file structure:")
+			timestamp := time.Now().Format(time.RFC3339Nano)
+			verboseOutput := srcPck.String()
+			finalOutput := fmt.Sprintf("Log generated at: %s\n\n%s", timestamp, verboseOutput)
+
+			log.Println(finalOutput)
+			logFile, err := os.Create("log.txt")
+			if err != nil {
+				log.Printf("Warning: could not create log.txt: %v", err)
+			} else {
+				defer logFile.Close()
+				_, err := logFile.WriteString(finalOutput)
+				if err != nil {
+					log.Printf("Warning: failed to write to log.txt: %v", err)
+				}
+			}
+	}
+
+	// Find replacement files
+	replacements, err := findReplacementFiles(targetDir, srcPck)
+	if err != nil {
+		log.Fatalf("Error finding replacement files: %v", err)
+	}
+
+	if len(replacements) == 0 {
+		log.Println("No valid replacement files found in target directory. Nothing to do.")
+		return
+	}
+
+	var replacementNames []string
+	for _, r := range replacements {
+		replacementNames = append(replacementNames, filepath.Base(r.Path))
+	}
+
+	log.Printf("Using %d replacement file(s): %s", len(replacements), strings.Join(replacementNames, ", "))
+
+	bytesWritten, err := pck.Repack(inputFile, outputFile, replacements)
+	if err != nil {
+		log.Fatalf("Error during repack: %v", err)
+	}
+
+	log.Println("Repack completed successfully!")
+	log.Printf("Output file written to: %s", outputFile)
+	log.Printf("Wrote %d bytes in total", bytesWritten)
+}
+
+func findReplacementFiles(targetDir string, srcPck *pck.File) ([]*pck.ReplacementFile, error) {
+	var replacements []*pck.ReplacementFile
+
+	// Scan for BNK replacements
+	bnkTargetDir := filepath.Join(targetDir, "bnk")
+	if _, err := os.Stat(bnkTargetDir); !os.IsNotExist(err) {
+		err := filepath.WalkDir(bnkTargetDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() {
+				base := filepath.Base(path)
+				ext := filepath.Ext(base)
+				indexStr := strings.TrimSuffix(base, ext)
+				index, err := strconv.Atoi(indexStr)
+				if err != nil {
+					log.Printf("Warning: could not parse index from filename %s, skipping.", base)
+					return nil
+				}
+
+				if index < 1 || index > len(srcPck.BnkIndexes) {
+					log.Printf("Warning: index %d from filename %s is out of bounds for BNK files (1-%d), skipping.", index, base, len(srcPck.BnkIndexes))
+					return nil
+				}
+				// Convert 1-based user index to 0-based slice index
+				id := srcPck.BnkIndexes[index-1].ID
+				replacements = append(replacements, &pck.ReplacementFile{ID: id, Path: path, Type: "bnk"})
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error scanning bnk target directory: %w", err)
+		}
+	}
+
+	// Scan for WEM replacements
+	wemTargetDir := filepath.Join(targetDir, "wem")
+	if _, err := os.Stat(wemTargetDir); !os.IsNotExist(err) {
+		err := filepath.WalkDir(wemTargetDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() {
+				base := filepath.Base(path)
+				ext := filepath.Ext(base)
+				indexStr := strings.TrimSuffix(base, ext)
+				index, err := strconv.Atoi(indexStr)
+				if err != nil {
+					log.Printf("Warning: could not parse index from filename %s, skipping.", base)
+					return nil
+				}
+
+				if index < 1 || index > len(srcPck.WemIndexes) {
+					log.Printf("Warning: index %d from filename %s is out of bounds for WEM files (1-%d), skipping.", index, base, len(srcPck.WemIndexes))
+					return nil
+				}
+				// Convert 1-based user index to 0-based slice index
+				id := srcPck.WemIndexes[index-1].ID
+				replacements = append(replacements, &pck.ReplacementFile{ID: id, Path: path, Type: "wem"})
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error scanning wem target directory: %w", err)
+		}
+	}
+
+	return replacements, nil
 }
