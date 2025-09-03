@@ -13,6 +13,7 @@ import (
 
 	"wwiseutil/bnk"
 	"wwiseutil/pck"
+	"wwiseutil/wwise"
 )
 
 func main() {
@@ -142,10 +143,17 @@ func handleUnpack(inputFile, outputDir string, verbose bool) {
 
 func handleReplace(inputFile, outputFile, targetDir string, verbose bool) {
 	ext := strings.ToLower(filepath.Ext(inputFile))
-	if ext != ".pck" && ext != ".npck" {
-		log.Fatalf("Replacing is only supported for the special .pck format.")
+	switch ext {
+	case ".pck", ".npck":
+		handlePckReplace(inputFile, outputFile, targetDir, verbose)
+	case ".bnk", ".nbnk":
+		handleBnkReplace(inputFile, outputFile, targetDir, verbose)
+	default:
+		log.Fatalf("Replacing is only supported for .pck and .bnk formats.")
 	}
+}
 
+func handlePckReplace(inputFile, outputFile, targetDir string, verbose bool) {
 	// Open the source PCK to get the ID mappings from indexes
 	srcPck, err := pck.Open(inputFile)
 	if err != nil {
@@ -155,25 +163,25 @@ func handleReplace(inputFile, outputFile, targetDir string, verbose bool) {
 
 	if verbose {
 		log.Println("Source file structure:")
-			timestamp := time.Now().Format(time.RFC3339Nano)
-			verboseOutput := srcPck.String()
-			finalOutput := fmt.Sprintf("Log generated at: %s\n\n%s", timestamp, verboseOutput)
+		timestamp := time.Now().Format(time.RFC3339Nano)
+		verboseOutput := srcPck.String()
+		finalOutput := fmt.Sprintf("Log generated at: %s\n\n%s", timestamp, verboseOutput)
 
-			log.Println(finalOutput)
-			logFile, err := os.Create("log.txt")
+		log.Println(finalOutput)
+		logFile, err := os.Create("log.txt")
+		if err != nil {
+			log.Printf("Warning: could not create log.txt: %v", err)
+		} else {
+			defer logFile.Close()
+			_, err := logFile.WriteString(finalOutput)
 			if err != nil {
-				log.Printf("Warning: could not create log.txt: %v", err)
-			} else {
-				defer logFile.Close()
-				_, err := logFile.WriteString(finalOutput)
-				if err != nil {
-					log.Printf("Warning: failed to write to log.txt: %v", err)
-				}
+				log.Printf("Warning: failed to write to log.txt: %v", err)
 			}
+		}
 	}
 
 	// Find replacement files
-	replacements, err := findReplacementFiles(targetDir, srcPck)
+	replacements, err := findPckReplacementFiles(targetDir, srcPck)
 	if err != nil {
 		log.Fatalf("Error finding replacement files: %v", err)
 	}
@@ -200,7 +208,7 @@ func handleReplace(inputFile, outputFile, targetDir string, verbose bool) {
 	log.Printf("Wrote %d bytes in total", bytesWritten)
 }
 
-func findReplacementFiles(targetDir string, srcPck *pck.File) ([]*pck.ReplacementFile, error) {
+func findPckReplacementFiles(targetDir string, srcPck *pck.File) ([]*pck.ReplacementFile, error) {
 	var replacements []*pck.ReplacementFile
 
 	// Scan for BNK replacements
@@ -265,6 +273,108 @@ func findReplacementFiles(targetDir string, srcPck *pck.File) ([]*pck.Replacemen
 		if err != nil {
 			return nil, fmt.Errorf("error scanning wem target directory: %w", err)
 		}
+	}
+
+	return replacements, nil
+}
+
+func handleBnkReplace(inputFile, outputFile, targetDir string, verbose bool) {
+	srcBnk, err := bnk.Open(inputFile)
+	if err != nil {
+		log.Fatalf("Error opening source BNK: %v", err)
+	}
+	defer srcBnk.Close()
+
+	if verbose {
+		log.Println("Source file structure:")
+		log.Println(srcBnk.String())
+	}
+
+	replacements, err := findBnkReplacementFiles(targetDir, srcBnk)
+	if err != nil {
+		log.Fatalf("Error finding replacement files: %v", err)
+	}
+
+	if len(replacements) == 0 {
+		log.Println("No valid replacement files found in target directory. Nothing to do.")
+		return
+	}
+
+	var replacementNames []string
+	for _, r := range replacements {
+		replacementNames = append(replacementNames, filepath.Base(r.Wem.(*os.File).Name()))
+	}
+
+	log.Printf("Using %d replacement file(s): %s", len(replacements), strings.Join(replacementNames, ", "))
+
+	srcBnk.ReplaceWems(replacements...)
+
+	outFile, err := os.Create(outputFile)
+	if err != nil {
+		log.Fatalf("Error creating output file: %v", err)
+	}
+	defer outFile.Close()
+
+	bytesWritten, err := srcBnk.WriteTo(outFile)
+	if err != nil {
+		log.Fatalf("Error writing to output file: %v", err)
+	}
+
+	log.Println("Repack completed successfully!")
+	log.Printf("Output file written to: %s", outputFile)
+	log.Printf("Wrote %d bytes in total", bytesWritten)
+}
+
+func findBnkReplacementFiles(targetDir string, srcBnk *bnk.File) ([]*wwise.ReplacementWem, error) {
+	var replacements []*wwise.ReplacementWem
+
+	err := filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			base := filepath.Base(path)
+			ext := filepath.Ext(base)
+			if strings.ToLower(ext) != ".wem" {
+				return nil
+			}
+
+			indexStr := strings.TrimSuffix(base, ext)
+			wemIndex, err := strconv.Atoi(indexStr)
+			if err != nil {
+				log.Printf("Warning: could not parse index from filename %s, skipping.", base)
+				return nil
+			}
+
+			if wemIndex < 0 || wemIndex >= len(srcBnk.Wems()) {
+				log.Printf("Warning: index %d from filename %s is out of bounds for the BNK, skipping.", wemIndex, base)
+				return nil
+			}
+
+			file, err := os.Open(path)
+			if err != nil {
+				log.Printf("Warning: could not open replacement file %s: %v", path, err)
+				return nil
+			}
+
+			fi, err := file.Stat()
+			if err != nil {
+				log.Printf("Warning: could not get file info for %s: %v", path, err)
+				file.Close()
+				return nil
+			}
+
+			replacements = append(replacements, &wwise.ReplacementWem{
+				Wem:      file,
+				WemIndex: wemIndex,
+				Length:   fi.Size(),
+			})
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("error scanning target directory: %w", err)
 	}
 
 	return replacements, nil

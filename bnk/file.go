@@ -12,8 +12,8 @@ import (
 )
 
 import (
-	"github.com/hpxro7/wwiseutil/util"
-	"github.com/hpxro7/wwiseutil/wwise"
+	"wwiseutil/util"
+	"wwiseutil/wwise"
 )
 
 // The wem byte alignment requirement for SoundBank files.

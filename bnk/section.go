@@ -9,8 +9,8 @@ import (
 )
 
 import (
-	"github.com/hpxro7/wwiseutil/util"
-	"github.com/hpxro7/wwiseutil/wwise"
+	"wwiseutil/util"
+	"wwiseutil/wwise"
 )
 
 // The number of bytes used to describe the header of a section.
